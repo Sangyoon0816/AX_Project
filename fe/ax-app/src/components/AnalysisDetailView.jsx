@@ -73,6 +73,9 @@ function ProcessInfoPanel({ processInfo, topClass }) {
           </div>
         ))}
       </div>
+      <p className="text-[11px] text-gray-300 mt-4">
+        출처: <a href="https://www.sciencedirect.com/science/article/pii/S0957417423010461?via%3Dihub" target="_blank" rel="noopener noreferrer" className="underline hover:text-gray-400">Chen et al. (2023), Expert Systems with Applications</a>
+      </p>
     </div>
   );
 }
