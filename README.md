@@ -1,6 +1,43 @@
 # AX Project — 웨이퍼 불량 AI 분석 시스템
 
-반도체 웨이퍼 맵 이미지를 업로드하면 ResNet9 딥러닝 모델이 결함 패턴을 분류하고, 결과를 대시보드와 이력으로 제공하는 풀스택 웹 애플리케이션입니다.
+> **작은 결함까지 놓치지 않는 AI 품질 검사** · K-디지털 트레이닝 4기 · AX 프로젝트 4조
+
+반도체 웨이퍼 맵 이미지를 업로드하면 ResNet9 딥러닝 모델이 결함 패턴을 분류하고, Grad-CAM 판단 근거와 원인 공정 후보까지 대시보드와 이력으로 제공하는 풀스택 웹 애플리케이션입니다.
+
+![ResNet9 분석 결과 화면](docs/images/ui_analysis_result.png)
+
+## 프로젝트 개요
+
+- 웨이퍼 맵의 불량 패턴을 분석하면 **어느 공정에서 문제가 발생했는지** 추적할 수 있지만, 육안 판독은 오분류와 인건비 상승 문제가 있습니다.
+- 웨이퍼 불량 패턴을 AI로 분류하고 공정 원인을 분석해, 신뢰할 수 있는 품질 이력을 제공하는 것이 목표입니다.
+- 데이터셋: **WM-811K** (정상 1종 + 결함 8종 = 9클래스)
+
+![프로젝트 개요](docs/images/overview.png)
+
+## 팀 구성
+
+| 이름 | 역할 |
+|------|------|
+| 박현승 (팀장) | AI 모델 설계 · 데이터 학습 |
+| 김상윤 | 프론트엔드 · 문서화 |
+| 김영웅 | 데이터 전처리 · AI 서버 설계 |
+| 성광 | 백엔드 (프론트–DB 연결) |
+| 추서림 | 백엔드 (AI 서버–DB 연결) |
+| 최규라 | DB · 블록체인 |
+
+## 화면 미리보기
+
+| 대시보드 | 분석 결과 |
+|:---:|:---:|
+| ![대시보드](docs/images/ui_dashboard.png) | ![분석 결과](docs/images/ui_analysis_result.png) |
+| **분석 상세 (Grad-CAM)** | **검사 이력** |
+| ![분석 상세](docs/images/ui_analysis_detail.png) | ![검사 이력](docs/images/ui_history.png) |
+
+### 유저 플로우
+
+회원가입 → 로그인 → 대시보드 → 웨이퍼 이미지 업로드 → AI 진단 → DB 저장 → 결과 확인(Grad-CAM · 원인공정)
+
+![유저 플로우](docs/images/user_flow.png)
 
 ---
 
@@ -66,6 +103,62 @@ Backend API (8000)
 - **검사 이력** — 전체 기록 페이지네이션 조회 및 정렬
 - **분석 상세** — 패턴별 확률 분포 바 차트, 원본 이미지 표시
 - **회원 관리** — 이메일 기반 회원가입 / 로그인
+
+---
+
+## ResNet9 모델
+
+웨이퍼 맵(1채널 64×64)을 9클래스로 분류하는 fast.ai 스타일 ResNet9 (from scratch)입니다. 구조는 [`ai/hs/model.py`](ai/hs/model.py)에 있습니다.
+
+```
+Input (1×64×64)
+ └─ stem  Conv3×3(64)
+ └─ layer1 Conv(128) + MaxPool ─ ResidualBlock(128)
+ └─ layer2 Conv(256) + MaxPool + Dropout2d(0.2) ─ ResidualBlock(256)
+ └─ layer3 Conv(512) + MaxPool + Dropout2d(0.2) ─ ResidualBlock(512)
+ └─ AdaptiveAvgPool → Dropout(0.4) → FC(9)
+```
+
+### 학습 파이프라인
+
+| 단계 | 내용 |
+|------|------|
+| 전처리 | 이미지 64×64 리사이징 통일, 라벨 없는 데이터 약 60만 개 제거 |
+| 불균형 처리 | 오버샘플링(회전·반전·이동 증강) + 언더샘플링 |
+| 학습 | Dropout · Weight Decay · Early Stopping · Class Weight 적용 |
+| 평가 | **Macro F1** 기준 (loss 기준은 정상 편향 문제로 폐기) |
+| 배포 | 학습된 모델을 AI 서버(8001)에 배포, BE → AI 서버로 이미지 전달 → 결과를 MySQL + 블록체인에 저장 |
+
+![학습 파이프라인](docs/images/pipeline.png)
+
+### 모델 개선 과정
+
+초기 ResNet9은 Scratch · Loc · Edge-Loc의 F1이 낮았고, Confusion Matrix 분석 결과 결함 클래스끼리의 혼동이 아니라 **정상(none)으로 잘못 분류**되는 것이 원인이었습니다.
+
+- Class Weight 조정 (none 가중치 조정), Dropout / Dropout2d, Weight Decay, Early Stopping 적용
+- 입력 크기 32×32 vs 64×64 비교 → 32×32는 Macro F1 0.7967로 하락해 **64×64 확정**
+- 256채널 Residual Block 추가 후 **Macro F1 0.8522 → 0.9300**
+
+![ResNet9 개선 과정](docs/images/resnet9_improvement.png)
+
+### 학습 곡선
+
+![ResNet9 학습 곡선](docs/images/resnet9_training_curves.png)
+
+### 모델 비교
+
+| 모델 | 특징 | 정확도 | F1 |
+|------|------|:---:|:---:|
+| FeatureMLP | 웨이퍼 모양을 숫자 59개로 요약해 입력 | 0.8744 | 0.8755 |
+| WaferCNN | 3단 conv의 얕은 구조 | 0.8089 | 0.8092 |
+| **4조 튜닝 모델 (ResNet9)** | 이미지를 통째로 보고 특징 탐색, Residual 연결로 정보 손실 방지 | **0.9311** | **0.9314** |
+
+![모델 비교](docs/images/model_comparison.png)
+
+### 판단 근거 시각화 · 원인공정 추론
+
+- **Grad-CAM**: 마지막 conv layer의 활성화 맵으로 원본 / 히트맵 / 오버레이 이미지를 생성해 모델이 어디를 보고 판단했는지 표시
+- **원인공정(Root Cause)**: 결함 패턴별로 문헌 근거 기반 원인 공정 후보와 가중치를 매핑 (`ai/hero/process_attribution.py`)
 
 ---
 
